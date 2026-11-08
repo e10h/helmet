@@ -13,6 +13,8 @@ WIDTH="${WIDTH:-640}"
 HEIGHT="${HEIGHT:-480}"
 FRAMERATE="${FRAMERATE:-60}"   # 60 FPS default = 16.6ms frame time
 EXPOSURE="${EXPOSURE:-sport}"  # Short shutter time reduces sensor integration latency
+BITRATE="${BITRATE:-2500000}"  # 2.5 Mbps cap prevents Wi-Fi packet burst drops
+GOP="${GOP:-}"
 TURBO_MODE=0
 
 show_help() {
@@ -24,6 +26,8 @@ Ultra-low-latency video streaming from Raspberry Pi camera to Mac.
 Options:
   --turbo, -u               Enable 120 FPS Turbo mode (8.3ms frame time!)
   -f, --fps <rate>          Framerate (default: 60)
+  -b, --bitrate <bps>       Target bitrate (default: 2500000 / 2.5 Mbps)
+  -g, --gop <frames>        Keyframe interval in frames (default: 12 in turbo, 15 in 60fps)
   -w, --width <pixels>      Camera capture width (default: 640)
   -h, --height <pixels>     Camera capture height (default: 480)
   -p, --port <port>         UDP port (default: 8888)
@@ -40,6 +44,14 @@ while [[ $# -gt 0 ]]; do
             TURBO_MODE=1
             FRAMERATE=120
             shift
+            ;;
+        -b|--bitrate)
+            BITRATE="$2"
+            shift 2
+            ;;
+        -g|--gop)
+            GOP="$2"
+            shift 2
             ;;
         -f|--fps)
             FRAMERATE="$2"
@@ -93,17 +105,25 @@ if [[ -z "${CLIENT_IP:-}" ]]; then
     fi
 fi
 
-# Calculate optimal intra-frame GOP for the framerate (approx every 150-250ms)
-GOP=$(( FRAMERATE / 4 ))
-if [ "$GOP" -lt 5 ]; then GOP=5; fi
+# Calculate optimal intra-frame GOP if not overridden:
+# A shorter GOP (10-15 frames = ~100ms in turbo) instantly clears any Wi-Fi packet-loss
+# compression smear / datamosh artifacts without waiting.
+if [[ -z "$GOP" ]]; then
+    if [[ "$TURBO_MODE" -eq 1 || "$FRAMERATE" -ge 90 ]]; then
+        GOP=12   # ~100ms at 120 FPS
+    else
+        GOP=15   # ~250ms at 60 FPS
+    fi
+fi
 
 echo "======================================================"
 echo "⚡ ZERO-LATENCY HELMET STREAM"
 echo "Target:      $PI_HOST"
 echo "Receiver:    udp://$CLIENT_IP:$PORT"
-echo "Video:       ${WIDTH}x${HEIGHT} @ ${FRAMERATE} FPS (GOP: $GOP)"
+echo "Video:       ${WIDTH}x${HEIGHT} @ ${FRAMERATE} FPS (Keyframe interval: every $GOP frames)"
+echo "Bitrate:     $(( BITRATE / 1000000 )) Mbps (burst-capped)"
 echo "Tuning:      x264 ultrafast + zerolatency (Baseline, 0 B-frames)"
-echo "Display:     Real-time external clock sync + frame-dropping"
+echo "Anti-Mosh:   Rapid keyframes + 1MB socket buffer"
 echo "======================================================"
 
 CONTROL_SOCKET="/tmp/ssh-fast-$$.sock"
@@ -142,6 +162,7 @@ ssh -S "$CONTROL_SOCKET" "$PI_HOST" "pkill -2 -f 'rpicam-vid.*$PORT' 2>/dev/null
 RPICAM_CMD="rpicam-vid -n -t 0 \
   --width $WIDTH --height $HEIGHT \
   --framerate $FRAMERATE \
+  -b $BITRATE \
   --exposure $EXPOSURE \
   --codec libav --libav-format mpegts \
   --profile baseline \
@@ -169,8 +190,11 @@ echo "Launching zero-latency ffplay viewer (press 'q' to quit)..."
 # -vf "setpts=0": remove presentation timestamp buffer pacing
 # -fflags nobuffer+discardcorrupt: disable libavformat buffering
 # -flags low_delay: disable decoder lookahead
+# -flags2 +fast: enable fast/aggressive decoding
 # -framedrop: drop behind-schedule frames
 # -probesize 32 -analyzeduration 0: instant start
+# buffer_size=1048576: 1MB OS socket buffer absorbs Wi-Fi burst jitter without dropping packets
+# fifo_size=100000: small FIFO buffer to prevent datamosh packet loss
 ffplay \
   -an \
   -sn \
@@ -178,9 +202,10 @@ ffplay \
   -vf "setpts=0" \
   -fflags nobuffer+discardcorrupt \
   -flags low_delay \
+  -flags2 +fast \
   -framedrop \
   -probesize 32 \
   -analyzeduration 0 \
-  "udp://0.0.0.0:$PORT?fifo_size=0&overrun_nonfatal=1"
+  "udp://0.0.0.0:$PORT?buffer_size=1048576&fifo_size=100000&overrun_nonfatal=1"
 
 

@@ -4,3 +4,4 @@
 # Temporary SSH sockets and logs
 /tmp/ssh-*.sock
 *.log
+
