@@ -26,6 +26,7 @@ class RealtimeUDPStream:
         self.frame = None
         self.running = True
         self.connected = False
+        self.fail_count = 0
 
         self.thread = threading.Thread(target=self._update, daemon=True)
         self.thread.start()
@@ -33,10 +34,15 @@ class RealtimeUDPStream:
     def _update(self):
         while self.running:
             if not self.cap.isOpened():
-                time.sleep(0.1)
+                time.sleep(1.0)
                 self.cap.open(self.url, cv2.CAP_FFMPEG)
+                if not self.cap.isOpened():
+                    self.fail_count += 1
+                    if self.fail_count % 5 == 1:
+                        print("Waiting for port/stream... (if another viewer or ffplay is open, close it)")
                 continue
 
+            self.fail_count = 0
             ret, frame = self.cap.read()
             if ret and frame is not None:
                 with self.lock:
@@ -59,7 +65,7 @@ class RealtimeUDPStream:
 
 def main():
     parser = argparse.ArgumentParser(description="Real-time YOLO Object Detection for Helmet Camera")
-    parser.add_argument("--url", default="udp://0.0.0.0:8888?buffer_size=1048576&fifo_size=100000&overrun_nonfatal=1",
+    parser.add_argument("--url", default="udp://0.0.0.0:8888?reuse=1&buffer_size=1048576&fifo_size=100000&overrun_nonfatal=1",
                         help="UDP stream URL (default: udp://0.0.0.0:8888?...)")
     parser.add_argument("--model", default="yolo11n.pt", help="YOLO model (default: yolo11n.pt or yolov8n.pt)")
     parser.add_argument("--conf", type=float, default=0.35, help="Confidence threshold (default: 0.35)")

@@ -71,8 +71,10 @@ else
     PYTHON_BIN="python3"
 fi
 
+INTERVAL="${INTERVAL:-0.25}"
+
 # Launch YOLO on Pi
-REMOTE_CMD="$PYTHON_BIN ~/pi_yolo_stream.py --ip $CLIENT_IP --port $PORT --width $WIDTH --height $HEIGHT --fps $FPS --model $MODEL"
+REMOTE_CMD="$PYTHON_BIN ~/pi_yolo_stream.py --ip $CLIENT_IP --port $PORT --width $WIDTH --height $HEIGHT --fps $FPS --model $MODEL --interval $INTERVAL"
 echo "Starting YOLO inference on $PI_HOST..."
 ssh -S "$CONTROL_SOCKET" "$PI_HOST" "$REMOTE_CMD" > "$REMOTE_LOG" 2>&1 &
 SSH_PID=$!
@@ -83,6 +85,9 @@ if ! kill -0 "$SSH_PID" 2>/dev/null; then
     cat "$REMOTE_LOG"
     exit 1
 fi
+
+# Terminate any leftover local ffplay from previous runs
+pkill -f 'ffplay.*8888' 2>/dev/null || true
 
 echo "Launching ffplay viewer (press 'q' to quit)..."
 ffplay \
@@ -95,4 +100,4 @@ ffplay \
   -framedrop \
   -probesize 32 \
   -analyzeduration 0 \
-  "udp://0.0.0.0:$PORT?buffer_size=1048576&fifo_size=100000&overrun_nonfatal=1"
+  "udp://0.0.0.0:$PORT?reuse=1&buffer_size=1048576&fifo_size=100000&overrun_nonfatal=1"

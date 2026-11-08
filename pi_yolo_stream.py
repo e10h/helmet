@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """
-Runs YOLO Object Detection directly on Raspberry Pi 5.
-Captures frames using Picamera2, performs YOLO inference,
-overlays bounding boxes, and streams the annotated video over UDP to the Mac.
+High-Performance On-Pi YOLO Object Detection with Asynchronous Tracking
+Decouples camera streaming from YOLO inference so the video stream NEVER freezes.
+
+- Video Capture & Streaming: runs continuously at full 30 FPS.
+- YOLO Inference: runs asynchronously in a background thread at a controlled interval (e.g. 3-5 Hz).
+- CPU Throttling: limits PyTorch to 2 cores so the Pi OS & network stack stay responsive.
 """
 
 import sys
 import time
 import argparse
 import subprocess
+import threading
 import numpy as np
 
 try:
@@ -24,35 +28,107 @@ except ImportError:
     sys.exit(1)
 
 try:
+    import torch
+    # Restrict PyTorch CPU threads so it never starves the Pi's OS or Wi-Fi stack
+    torch.set_num_threads(2)
     from ultralytics import YOLO
 except ImportError:
-    print("Error: ultralytics not found. Install with: pip install ultralytics")
+    print("Error: ultralytics or torch not found.")
     sys.exit(1)
 
 
+class AsyncYOLODetector(threading.Thread):
+    def __init__(self, model_name="yolov8n.pt", conf=0.35, interval=0.25):
+        """
+        Runs YOLO in background thread.
+        interval: minimum seconds between detections (default 0.25s = 4 detections/sec)
+        """
+        super().__init__(daemon=True)
+        self.model = YOLO(model_name)
+        self.conf = conf
+        self.interval = interval
+        self.lock = threading.Lock()
+        self.latest_frame = None
+        self.boxes = []
+        self.infer_ms = 0.0
+        self.running = True
+        self.new_frame_event = threading.Event()
+
+    def update_frame(self, frame):
+        with self.lock:
+            self.latest_frame = frame
+        self.new_frame_event.set()
+
+    def get_detections(self):
+        with self.lock:
+            return list(self.boxes), self.infer_ms
+
+    def run(self):
+        last_run = 0.0
+        while self.running:
+            self.new_frame_event.wait(timeout=0.1)
+            self.new_frame_event.clear()
+
+            now = time.time()
+            if (now - last_run) < self.interval:
+                time.sleep(0.01)
+                continue
+
+            with self.lock:
+                frame = self.latest_frame
+            if frame is None:
+                continue
+
+            start_t = time.time()
+            try:
+                # Downscale frame for even faster inference if needed
+                results = self.model(frame, conf=self.conf, verbose=False)
+                t_infer = (time.time() - start_t) * 1000.0
+
+                current_boxes = []
+                if results and len(results) > 0 and results[0].boxes is not None:
+                    for b in results[0].boxes:
+                        cls_id = int(b.cls[0])
+                        conf_score = float(b.conf[0])
+                        xyxy = b.xyxy[0].cpu().numpy().astype(int)
+                        label = f"{self.model.names[cls_id]} {int(conf_score * 100)}%"
+                        current_boxes.append((xyxy, label, cls_id))
+
+                with self.lock:
+                    self.boxes = current_boxes
+                    self.infer_ms = t_infer
+                last_run = time.time()
+
+            except Exception as e:
+                print(f"Inference error: {e}")
+                time.sleep(0.1)
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Pi-Side YOLO Object Detection and Streaming")
-    parser.add_argument("--ip", default="192.168.1.129", help="Destination IP address (Mac)")
+    parser = argparse.ArgumentParser(description="Smooth Asynchronous On-Pi YOLO Streaming")
+    parser.add_argument("--ip", default="192.168.1.129", help="Destination Mac IP")
     parser.add_argument("--port", type=int, default=8888, help="Destination UDP port")
-    parser.add_argument("--width", type=int, default=640, help="Camera width (default: 640)")
-    parser.add_argument("--height", type=int, default=480, help="Camera height (default: 480)")
-    parser.add_argument("--fps", type=int, default=30, help="Camera framerate (default: 30)")
-    parser.add_argument("--model", default="yolov8n.pt", help="YOLO model (default: yolov8n.pt or yolo11n.pt)")
+    parser.add_argument("--width", type=int, default=640, help="Width (default: 640)")
+    parser.add_argument("--height", type=int, default=480, help="Height (default: 480)")
+    parser.add_argument("--fps", type=int, default=30, help="Video stream FPS (default: 30)")
+    parser.add_argument("--model", default="yolov8n.pt", help="YOLO model (default: yolov8n.pt)")
     parser.add_argument("--conf", type=float, default=0.35, help="Confidence threshold")
-    parser.add_argument("--skip-frames", type=int, default=1,
-                        help="Run YOLO every N frames to maintain high video framerate (default: 1 = every frame)")
+    parser.add_argument("--interval", type=float, default=0.25,
+                        help="YOLO detection interval in seconds (default: 0.25 = 4 detections/sec)")
     args = parser.parse_args()
 
-    print("=" * 50)
-    print("🧠 RASPBERRY PI ON-DEVICE YOLO DETECTOR")
-    print(f"Model:       {args.model}")
-    print(f"Camera:      {args.width}x{args.height} @ {args.fps} FPS")
+    print("=" * 55)
+    print("🚀 ASYNC HELMET YOLO DETECTOR & STREAMER")
+    print(f"Model:       {args.model} (capped at 2 CPU cores)")
+    print(f"Video Feed:  {args.width}x{args.height} @ {args.fps} FPS")
+    print(f"YOLO Rate:   Every {args.interval}s (~{int(1/args.interval)} Hz)")
     print(f"Streaming:   udp://{args.ip}:{args.port}")
-    print("=" * 50)
+    print("=" * 55)
 
-    # Load YOLO on Pi CPU
-    print(f"Loading YOLO model ({args.model}) on Pi CPU...")
-    model = YOLO(args.model)
+    # Initialize asynchronous YOLO worker
+    print("Loading YOLO in background worker thread...")
+    yolo_worker = AsyncYOLODetector(model_name=args.model, conf=args.conf, interval=args.interval)
+    yolo_worker.start()
 
     # Initialize Picamera2
     print("Initializing Picamera2...")
@@ -63,9 +139,9 @@ def main():
     )
     picam2.configure(camera_config)
     picam2.start()
-    time.sleep(1.0)  # Allow sensor exposure to stabilize
+    time.sleep(0.8)
 
-    # Launch FFmpeg to stream annotated frames over UDP
+    # Launch FFmpeg output pipeline
     ffmpeg_cmd = [
         "ffmpeg",
         "-y",
@@ -85,69 +161,67 @@ def main():
         "-f", "mpegts",
         f"udp://{args.ip}:{args.port}?pkt_size=1316"
     ]
-    print(f"Starting UDP stream pipeline -> udp://{args.ip}:{args.port}")
-    ffmpeg_proc = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+    ffmpeg_proc = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
-    frame_count = 0
     prev_time = time.time()
     fps_smooth = 0.0
-    last_boxes = []
 
-    print("Running detection and streaming. Press Ctrl+C to stop.")
+    print("Stream running smoothly! Press Ctrl+C to stop.")
 
     try:
         while True:
-            # Capture frame from Pi camera (RGB format)
+            # 1. Capture camera frame (30 FPS non-blocking)
             frame_rgb = picam2.capture_array()
-            # Convert RGB to BGR for OpenCV
             frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
 
-            frame_count += 1
-            run_yolo = (frame_count % args.skip_frames == 0)
+            # 2. Hand off frame to background YOLO worker (non-blocking)
+            yolo_worker.update_frame(frame_bgr)
 
-            start_infer = time.time()
-            if run_yolo:
-                results = model(frame_bgr, conf=args.conf, verbose=False)
-                annotated_frame = results[0].plot()
-                infer_ms = (time.time() - start_infer) * 1000.0
+            # 3. Get latest detected bounding boxes (non-blocking)
+            boxes, infer_ms = yolo_worker.get_detections()
 
-                # Log detections to terminal
-                boxes = results[0].boxes
-                if boxes is not None and len(boxes) > 0:
-                    names = [model.names[int(cls)] for cls in boxes.cls]
-                    print(f"[{time.strftime('%H:%M:%S')}] Detected ({infer_ms:.0f}ms): {', '.join(names)}")
-            else:
-                annotated_frame = frame_bgr
-                infer_ms = 0.0
+            # 4. Draw persistent bounding boxes onto the live video frame
+            for xyxy, label, cls_id in boxes:
+                x1, y1, x2, y2 = xyxy
+                cv2.rectangle(frame_bgr, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                cv2.putText(
+                    frame_bgr,
+                    label,
+                    (x1, max(y1 - 6, 16)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (0, 255, 0),
+                    1,
+                    cv2.LINE_AA
+                )
 
-            # Calculate FPS
+            # Calculate live streaming FPS
             curr_time = time.time()
             fps = 1.0 / (curr_time - prev_time) if (curr_time - prev_time) > 0 else 0
             prev_time = curr_time
             fps_smooth = 0.9 * fps_smooth + 0.1 * fps if fps_smooth > 0 else fps
 
-            # Draw HUD stats on the video
-            hud_text = f"PI 5 YOLO | FPS: {fps_smooth:.1f} | Infer: {infer_ms:.0f}ms"
-            cv2.putText(annotated_frame, hud_text, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            # Draw HUD bar
+            hud_text = f"STREAM: {fps_smooth:.1f} FPS | YOLO: {infer_ms:.0f}ms | Dets: {len(boxes)}"
+            cv2.rectangle(frame_bgr, (5, 5), (5 + len(hud_text) * 11, 30), (0, 0, 0), -1)
+            cv2.putText(frame_bgr, hud_text, (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1, cv2.LINE_AA)
 
-            # Pipe annotated BGR frame to FFmpeg UDP streamer
+            # 5. Pipe frame immediately to FFmpeg UDP streamer
             try:
-                ffmpeg_proc.stdin.write(annotated_frame.tobytes())
+                ffmpeg_proc.stdin.write(frame_bgr.tobytes())
             except BrokenPipeError:
-                err = ffmpeg_proc.stderr.read().decode('utf-8', errors='ignore') if ffmpeg_proc.stderr else ""
-                print(f"FFmpeg pipeline broken: {err}")
                 break
 
     except KeyboardInterrupt:
-        print("\nStopping...")
+        print("\nStopping stream...")
     finally:
+        yolo_worker.running = False
         picam2.stop()
         if ffmpeg_proc.stdin:
             ffmpeg_proc.stdin.close()
         ffmpeg_proc.wait()
-        print("Pipeline stopped.")
+        print("Shutdown complete.")
 
 
 if __name__ == "__main__":
     main()
-

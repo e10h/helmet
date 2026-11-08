@@ -183,6 +183,9 @@ if ! kill -0 "$SSH_PID" 2>/dev/null; then
     exit 1
 fi
 
+# Terminate any leftover local ffplay from previous runs
+pkill -f 'ffplay.*8888' 2>/dev/null || true
+
 echo "Launching zero-latency ffplay viewer (press 'q' to quit)..."
 # -an: disable audio (prevents audio-clock sync lag)
 # -sn: disable subtitles
@@ -206,6 +209,6 @@ ffplay \
   -framedrop \
   -probesize 32 \
   -analyzeduration 0 \
-  "udp://0.0.0.0:$PORT?buffer_size=1048576&fifo_size=100000&overrun_nonfatal=1"
+  "udp://0.0.0.0:$PORT?reuse=1&buffer_size=1048576&fifo_size=100000&overrun_nonfatal=1"
 
 
