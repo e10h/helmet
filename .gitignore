@@ -1,0 +1,6 @@
+# OS
+.DS_Store
+
+# Temporary SSH sockets and logs
+/tmp/ssh-*.sock
+*.log
