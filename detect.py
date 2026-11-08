@@ -20,8 +20,7 @@ class RealtimeUDPStream:
     """
     def __init__(self, url):
         self.url = url
-        self.cap = cv2.VideoCapture(self.url, cv2.CAP_FFMPEG)
-        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        self.cap = cv2.VideoCapture()
         self.lock = threading.Lock()
         self.frame = None
         self.running = True
@@ -34,13 +33,14 @@ class RealtimeUDPStream:
     def _update(self):
         while self.running:
             if not self.cap.isOpened():
-                time.sleep(1.0)
                 self.cap.open(self.url, cv2.CAP_FFMPEG)
                 if not self.cap.isOpened():
+                    self.cap.release()
                     self.fail_count += 1
                     if self.fail_count % 5 == 1:
-                        print("Waiting for port/stream... (if another viewer or ffplay is open, close it)")
-                continue
+                        print("Waiting for camera stream from Pi...")
+                    time.sleep(0.5)
+                    continue
 
             self.fail_count = 0
             ret, frame = self.cap.read()
@@ -49,7 +49,9 @@ class RealtimeUDPStream:
                     self.frame = frame
                     self.connected = True
             else:
-                time.sleep(0.005)
+                # If stream disconnected or stalled
+                self.cap.release()
+                time.sleep(0.1)
 
     def read(self):
         with self.lock:
