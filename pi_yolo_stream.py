@@ -76,6 +76,7 @@ def main():
         "-r", str(args.fps),
         "-i", "-",
         "-c:v", "libx264",
+        "-pix_fmt", "yuv420p",
         "-preset", "ultrafast",
         "-tune", "zerolatency",
         "-profile:v", "baseline",
@@ -85,7 +86,7 @@ def main():
         f"udp://{args.ip}:{args.port}?pkt_size=1316"
     ]
     print(f"Starting UDP stream pipeline -> udp://{args.ip}:{args.port}")
-    ffmpeg_proc = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    ffmpeg_proc = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
 
     frame_count = 0
     prev_time = time.time()
@@ -133,6 +134,8 @@ def main():
             try:
                 ffmpeg_proc.stdin.write(annotated_frame.tobytes())
             except BrokenPipeError:
+                err = ffmpeg_proc.stderr.read().decode('utf-8', errors='ignore') if ffmpeg_proc.stderr else ""
+                print(f"FFmpeg pipeline broken: {err}")
                 break
 
     except KeyboardInterrupt:
@@ -147,3 +150,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
