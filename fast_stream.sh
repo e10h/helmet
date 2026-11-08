@@ -183,8 +183,9 @@ if ! kill -0 "$SSH_PID" 2>/dev/null; then
     exit 1
 fi
 
-# Terminate any leftover local ffplay from previous runs
-pkill -f 'ffplay.*8888' 2>/dev/null || true
+# Terminate any leftover local viewer/process holding port 8888
+lsof -ti UDP:"$PORT" 2>/dev/null | xargs kill -9 2>/dev/null || true
+pkill -f "ffplay.*$PORT" 2>/dev/null || true
 
 echo "Launching zero-latency ffplay viewer (press 'q' to quit)..."
 # -an: disable audio (prevents audio-clock sync lag)
