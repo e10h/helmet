@@ -113,3 +113,4 @@ fi
 
 echo "Launching Mac GPU YOLO Detector (press 'q' or Esc to quit)..."
 python3 detect.py $TRACK_FLAG --url "udp://0.0.0.0:$PORT?reuse=1&buffer_size=1048576&fifo_size=100000&overrun_nonfatal=1"
+

@@ -11,7 +11,7 @@ PORT="${PORT:-8888}"
 WIDTH="${WIDTH:-640}"
 HEIGHT="${HEIGHT:-480}"
 FPS="${FPS:-30}"
-MODEL="${MODEL:-yolov8n.pt}"
+MODEL="${MODEL:-yolo11n_ncnn_model}"
 CLIENT_IP="${CLIENT_IP:-}"
 
 # Detect Mac IP
@@ -58,8 +58,12 @@ trap cleanup EXIT INT TERM
 # Connect master SSH
 ssh -M -S "$CONTROL_SOCKET" -f -N "$PI_HOST"
 
-# Make sure pi_yolo_stream.py exists on the Pi
+# Make sure pi_yolo_stream.py and NCNN model exist on the Pi
 scp -S "$CONTROL_SOCKET" pi_yolo_stream.py "$PI_HOST":~/pi_yolo_stream.py >/dev/null 2>&1 || true
+if [ -d "yolo11n_ncnn_model" ]; then
+    echo "Syncing optimized NCNN model to Pi..."
+    scp -S "$CONTROL_SOCKET" -r yolo11n_ncnn_model "$PI_HOST":~/ >/dev/null 2>&1 || true
+fi
 
 # Kill any existing stream processes on the Pi
 ssh -S "$CONTROL_SOCKET" "$PI_HOST" "pkill -2 -f 'pi_yolo_stream.py|rpicam-vid' 2>/dev/null || true"

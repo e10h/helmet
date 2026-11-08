@@ -8,6 +8,7 @@ Decouples camera streaming from YOLO inference so the video stream NEVER freezes
 - CPU Throttling: limits PyTorch to 2 cores so the Pi OS & network stack stay responsive.
 """
 
+import os
 import sys
 import time
 import argparse
@@ -111,7 +112,11 @@ def main():
     parser.add_argument("--width", type=int, default=640, help="Width (default: 640)")
     parser.add_argument("--height", type=int, default=480, help="Height (default: 480)")
     parser.add_argument("--fps", type=int, default=30, help="Video stream FPS (default: 30)")
-    parser.add_argument("--model", default="yolov8n.pt", help="YOLO model (default: yolov8n.pt)")
+    # Default to high-speed ARM NEON NCNN model if available
+    default_model = "yolo11n_ncnn_model" if os.path.exists("yolo11n_ncnn_model") or os.path.exists(os.path.expanduser("~/yolo11n_ncnn_model")) else "yolov8n.pt"
+
+    parser.add_argument("--model", default=default_model, help="YOLO model or NCNN directory")
+    parser.add_argument("--imgsz", type=int, default=320, help="Inference image size (default: 320 for high FPS)")
     parser.add_argument("--conf", type=float, default=0.35, help="Confidence threshold")
     parser.add_argument("--interval", type=float, default=0.25,
                         help="YOLO detection interval in seconds (default: 0.25 = 4 detections/sec)")
